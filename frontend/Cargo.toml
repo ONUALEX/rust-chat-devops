@@ -12,7 +12,7 @@ license = "MIT"
 [dependencies]
 yew = { version = "0.21", features = ["csr"] }
 yew-hooks = "0.3"
-web-sys = { version = "0.3", features = ["HtmlTextAreaElement"] }
+web-sys = { version = "0.3", features = ["HtmlTextAreaElement", "Window", "Location"] }
 
 common = { path = "../common" }
 serde = { workspace = true }

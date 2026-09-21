@@ -20,7 +20,7 @@ fn App() -> Html {
     let username_handle = use_state(String::default);
     let username = (*username_handle).clone();
 
-    let ws = use_websocket("ws://127.0.0.1:8000".to_string());
+    let ws = use_websocket(ws_url());
 
     let mut cloned_messages = messages.clone();
     use_effect_with(ws.message.clone(), move |ws_message| {
@@ -96,4 +96,13 @@ fn App() -> Html {
 
 fn main() {
     yew::Renderer::<App>::new().render();
+}
+
+
+// Connects through Nginx at /api/, on localhost AND on the server.
+fn ws_url() -> String {
+    let location = web_sys::window().expect("no window").location();
+    let scheme = if location.protocol().unwrap_or_default() == "https:" { "wss" } else { "ws" };
+    let host = location.host().unwrap_or_default();
+    format!("{}://{}/api/", scheme, host)
 }

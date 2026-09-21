@@ -1,0 +1,6 @@
+target/
+frontend/dist/
+.git/
+.github/
+.env
+.DS_Store

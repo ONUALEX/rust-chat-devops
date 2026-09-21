@@ -1,0 +1,107 @@
+name: Build, Push and Deploy
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set lowercase image prefix
+        run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/rust-chat" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/backend.Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-backend:latest
+            ${{ env.IMAGE_PREFIX }}-backend:${{ github.sha }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Build and push frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/frontend.Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-frontend:latest
+            ${{ env.IMAGE_PREFIX }}-frontend:${{ github.sha }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set lowercase image prefix
+        run: echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/rust-chat" >> "$GITHUB_ENV"
+
+      - name: Set up SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          DROPLET_IP: ${{ secrets.DROPLET_IP }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DROPLET_IP" >> ~/.ssh/known_hosts
+
+      - name: Copy compose and Nginx config
+        env:
+          DROPLET_IP: ${{ secrets.DROPLET_IP }}
+        run: |
+          ssh root@"$DROPLET_IP" "mkdir -p /opt/rust-chat/nginx"
+          scp docker-compose.yml root@"$DROPLET_IP":/opt/rust-chat/
+          scp nginx/nginx.conf root@"$DROPLET_IP":/opt/rust-chat/nginx/
+
+      - name: Pull and redeploy
+        env:
+          DROPLET_IP: ${{ secrets.DROPLET_IP }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          TAG: ${{ github.sha }}
+        run: |
+          ssh root@"$DROPLET_IP" bash -s <<EOF
+          set -e
+          cd /opt/rust-chat
+          printf 'IMAGE_PREFIX=${IMAGE_PREFIX}\nTAG=${TAG}\nPOSTGRES_PASSWORD=${POSTGRES_PASSWORD}\n' > .env
+          echo '${GHCR_TOKEN}' | docker login ghcr.io -u '${GHCR_USER}' --password-stdin
+          docker compose pull backend frontend
+          docker compose up -d --no-build --remove-orphans
+          docker image prune -f
+          EOF
+
+      - name: Verify deployment
+        env:
+          DROPLET_IP: ${{ secrets.DROPLET_IP }}
+        run: |
+          for i in 1 2 3 4 5 6; do
+            if curl -fsS "http://$DROPLET_IP/" > /dev/null; then
+              echo "App is live at http://$DROPLET_IP"; exit 0
+            fi
+            echo "Waiting for app... ($i)"; sleep 5
+          done
+          exit 1
